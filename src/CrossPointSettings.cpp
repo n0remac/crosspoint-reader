@@ -83,6 +83,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     }
   }
 
+  doc["fabricServerUrl"] = fabricServerUrl;
+
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   doc["frontButtonBack"] = frontButtonBack;
   doc["frontButtonConfirm"] = frontButtonConfirm;
@@ -178,6 +180,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       s.*(info.valuePtr) = v;
     }
   }
+
+  const char* fabricUrl = doc["fabricServerUrl"] | "";
+  copyToField(fabricServerUrl, fabricUrl, sizeof(fabricServerUrl));
 
   // Older files stored one combined touch mode under "touchReaderControls":
   // 0=off, 1=tap, 2=swipe, 3=inverted tap. Split it into the master toggle

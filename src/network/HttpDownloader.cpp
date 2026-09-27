@@ -289,6 +289,70 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
   return runGetSecure(url, username, password, sink) == OK;
 }
 
+bool HttpDownloader::postJson(const std::string& url, const char* body, char* response, const size_t capacity,
+                              size_t& responseSize) {
+  responseSize = 0;
+  WifiPowerSaveGuard psGuard;
+#if defined(FREEINK_NET_WOLFSSL)
+  freeink::SecureHttpClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  const int status = http.sendRequest("POST", reinterpret_cast<const uint8_t*>(body), strlen(body),
+                                      [response, capacity, &responseSize](const uint8_t* data, size_t len) {
+                                        if (len > capacity - responseSize) return false;
+                                        memcpy(response + responseSize, data, len);
+                                        responseSize += len;
+                                        return true;
+                                      });
+  if (status != 200 || !http.responseComplete() || http.callbackAborted()) {
+    LOG_ERR("HTTP", "Fabric POST failed: status=%d", status);
+    responseSize = 0;
+    return false;
+  }
+#else
+  esp_http_client_config_t config = {};
+  config.url = url.c_str();
+  config.buffer_size = HTTP_RX_BUF;
+  config.buffer_size_tx = HTTP_TX_BUF;
+  config.timeout_ms = HTTP_TIMEOUT_MS;
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) return false;
+  esp_http_client_set_method(client, HTTP_METHOD_POST);
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  const size_t bodySize = strlen(body);
+  const esp_err_t opened = esp_http_client_open(client, bodySize);
+  if (opened != ESP_OK || esp_http_client_write(client, body, bodySize) != static_cast<int>(bodySize)) {
+    LOG_ERR("HTTP", "Fabric POST open/write failed");
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  esp_http_client_fetch_headers(client);
+  const int status = esp_http_client_get_status_code(client);
+  auto chunk = makeUniqueNoThrow<char[]>(512);
+  if (!chunk) {
+    LOG_ERR("HTTP", "OOM: Fabric response buffer");
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  int read = 0;
+  while ((read = esp_http_client_read(client, chunk.get(), 512)) > 0) {
+    if (static_cast<size_t>(read) > capacity - responseSize) break;
+    memcpy(response + responseSize, chunk.get(), read);
+    responseSize += read;
+  }
+  const bool complete = read == 0 && esp_http_client_is_complete_data_received(client);
+  esp_http_client_cleanup(client);
+  if (status != 200 || !complete) {
+    LOG_ERR("HTTP", "Fabric POST failed: status=%d", status);
+    responseSize = 0;
+    return false;
+  }
+#endif
+  return true;
+}
+
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,

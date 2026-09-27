@@ -45,6 +45,8 @@ class HttpDownloader {
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
                        const std::string& password = "");
 
+  static bool postJson(const std::string& url, const char* body, char* response, size_t capacity, size_t& responseSize);
+
   /**
    * Download a file to the SD card with optional credentials.
    *
