@@ -5,8 +5,24 @@
 namespace fabric {
 enum class Transition : uint8_t { Stay, Open, Exit, Invalid };
 
+enum class RecoveryAction : uint8_t { Retry, Configure, UseDefault };
+
+class RecoveryMenu {
+ public:
+  void reset(bool invalidUrl) { selectedAction = invalidUrl ? RecoveryAction::Configure : RecoveryAction::Retry; }
+  void move(int delta, bool hasDefault);
+  RecoveryAction selected() const { return selectedAction; }
+
+ private:
+  RecoveryAction selectedAction = RecoveryAction::Retry;
+};
+
 class Navigator {
  public:
+  void reset() {
+    currentId[0] = '\0';
+    historyCount = focused = top = 0;
+  }
   bool open(const char* id);
   bool back();
   Transition applyAction(const char* type, const char* pageId);

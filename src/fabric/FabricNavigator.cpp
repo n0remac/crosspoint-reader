@@ -5,6 +5,12 @@
 #include "FabricPage.h"
 
 namespace fabric {
+void RecoveryMenu::move(int delta, bool hasDefault) {
+  const int count = hasDefault ? 3 : 2;
+  const int next = (static_cast<int>(selectedAction) + delta) % count;
+  selectedAction = static_cast<RecoveryAction>(next < 0 ? next + count : next);
+}
+
 bool Navigator::open(const char* id) {
   if (!validPageId(id)) return false;
   if (strcmp(currentId, id) == 0) return true;

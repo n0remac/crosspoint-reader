@@ -107,4 +107,30 @@ int main() {
   assert(nav.applyAction("navigate", "stocks") == fabric::Transition::Open);
   assert(nav.applyAction("back", "") == fabric::Transition::Exit);
   assert(nav.applyAction("navigate", "../unsafe") == fabric::Transition::Invalid);
+  assert(nav.open("detail"));
+  nav.setFocus(4);
+  nav.setViewport(3);
+  nav.reset();
+  assert(nav.current()[0] == '\0');
+  assert(nav.depth() == 0 && nav.focus() == 0 && nav.viewport() == 0);
+  assert(!nav.back());
+
+  fabric::RecoveryMenu recovery;
+  recovery.reset(true);
+  assert(recovery.selected() == fabric::RecoveryAction::Configure);
+  recovery.move(1, true);
+  assert(recovery.selected() == fabric::RecoveryAction::UseDefault);
+  recovery.move(1, true);
+  assert(recovery.selected() == fabric::RecoveryAction::Retry);
+  recovery.move(-1, true);
+  assert(recovery.selected() == fabric::RecoveryAction::UseDefault);
+  recovery.reset(false);
+  assert(recovery.selected() == fabric::RecoveryAction::Retry);
+  recovery.move(-1, false);
+  assert(recovery.selected() == fabric::RecoveryAction::Configure);
+  recovery.move(1, false);
+  assert(recovery.selected() == fabric::RecoveryAction::Retry);
+  recovery.reset(true);
+  recovery.move(1, false);
+  assert(recovery.selected() == fabric::RecoveryAction::Retry);
 }

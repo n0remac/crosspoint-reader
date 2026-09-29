@@ -42,10 +42,12 @@ class HttpDownloader {
   /**
    * Stream the response body to onData as it arrives, without buffering it.
    */
+  // Optional status is 0 until a response arrives; negative values are transport errors.
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", int* httpStatus = nullptr);
 
-  static bool postJson(const std::string& url, const char* body, char* response, size_t capacity, size_t& responseSize);
+  static bool postJson(const std::string& url, const char* body, char* response, size_t capacity, size_t& responseSize,
+                       int* httpStatus = nullptr);
 
   /**
    * Download a file to the SD card with optional credentials.

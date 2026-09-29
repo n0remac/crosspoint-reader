@@ -2,9 +2,32 @@
 
 The Fabric entry on Home opens the page list returned by `GET /api/pages`. Only
 pages declaring Fabric `0.2` are shown. Choose a page with touch or mapped
-navigation buttons. The first visit asks for a plain HTTP LAN server URL such as
-`http://192.168.1.50:8080`; it is saved as `fabricServerUrl` in CrossPoint's
-settings JSON on SD. The error screen offers **Retry** and **Fabric server URL**.
+navigation buttons. HTTP LAN URLs such as `http://192.168.1.50:8080` and HTTPS
+server URLs are supported. A non-empty `fabricServerUrl` saved in
+`/.crosspoint/settings.json` takes precedence over the compiled default. Missing
+or empty saved values use the compiled default; with no default, opening Fabric
+asks for a URL. The error screen shows the configured address and HTTP status
+when a response arrived. Use Up/Down or Left/Right to select **Retry**, **Fabric
+server URL**, or **Use default server** (when a default is compiled in), then
+Confirm. Touch activates the same actions. An invalid URL selects the URL editor
+by default and is rejected before connecting to Wi-Fi. The editor validates new
+addresses before saving; clearing the editor uses the compiled default.
+
+Personal builds can set the default in the gitignored `platformio.local.ini`:
+
+```ini
+[fabric]
+default_server_url = https://fabric-pi.example.ts.net
+```
+
+The checked-in default is empty. `FABRIC_DEFAULT_SERVER_URL` initializes the
+existing 128-byte settings field, so addresses must fit in 127 bytes plus the
+terminator. **Use default server** saves the compiled address and immediately
+reloads the page list, discarding navigation from the previous server. Alternatively,
+clear or remove the saved `fabricServerUrl` on SD and reboot. Flashing firmware does not erase settings on SD.
+The wolfSSL transport encrypts HTTPS requests but currently skips certificate
+verification for both GET and POST because it has no CA bundle configured.
+Fabric authentication is not implemented.
 
 The firmware handles page components and sends only a component ID to the
 server's action endpoint. It does not interpret the action's `name`, `args`, or
@@ -60,3 +83,38 @@ No X4/X4 Pro serial device was attached to the development host, so these
 numbers and touch behavior require a device run before the milestone can be
 called complete. No Fabric protocol change was required by the host fixtures
 or firmware build.
+
+## Default server verification
+
+Run `pio run -e default` to build, then `pio run -e default -t upload` to flash
+an attached X3. Connect to Wi-Fi and open Fabric with an absent or empty saved
+URL: the URL keyboard should be skipped when a default is compiled in. Verify
+`GET /api/pages`, opening a page, fetching page data, and executing an action
+(`POST /api/pages/<id>/actions`) over HTTPS. Monitor the existing `FABRIC` free
+heap and largest-block logs across repeated GET and POST requests.
+
+Use the server URL control on the error screen to save an override and reboot
+to verify it takes precedence. Clear or remove only `fabricServerUrl` in the SD
+settings file, reboot, and verify the compiled default returns. A build with an
+empty default and no saved URL should still show the URL keyboard. Also check
+that plain HTTP servers continue to work.
+
+## Recovering from a bad address
+
+With a malformed saved URL, verify that Fabric shows the address and an HTTP/HTTPS
+validation message before opening Wi-Fi selection. Confirm should open the URL
+editor; Up/Down and Left/Right must visibly select each recovery action. Verify
+**Use default server** connects to the compiled address and remains selected as
+the server after reboot. Without a compiled default, only Retry and the editor
+should appear. Check the layout in portrait and landscape, and verify touch on
+a touch-capable device. A 404/503 response should show its HTTP status; a connection
+failure should explain that no HTTP response arrived.
+
+For Serial logs, use `pio device list` to find the reader's current port, then
+`pio device monitor -e default --port /dev/ttyACM1 --baud 115200` (replace the port
+with the one listed). USB numbering can change after an upload or reboot. On
+Linux, a `monitor_port` under `/dev/serial/by-id/` in the local environment override
+keeps `pio device monitor -e default` bound to the same reader. Fabric logs the
+settings source, URL validation reason, server connection, GET/POST URL, response
+status and byte count, JSON errors, and recovery selections. URLs containing
+credentials are rejected without printing their contents to Serial.

@@ -21,11 +21,15 @@ class FabricActivity final : public Activity, private UiAppHost {
  private:
   static constexpr freeink::ui::ActionId ACTION_RETRY = 2;
   static constexpr freeink::ui::ActionId ACTION_CONFIG = 3;
+  static constexpr freeink::ui::ActionId ACTION_DEFAULT = 4;
   static void screenFn(UiScreen& screen, void* user);
   static void componentFn(const freeink::ui::ActionEvent& event, void* user);
   static void retryFn(const freeink::ui::ActionEvent&, void* user);
   static void configFn(const freeink::ui::ActionEvent&, void* user);
+  static void defaultFn(const freeink::ui::ActionEvent& event, void* user);
   void drawScreen(UiScreen& screen);
+  void applyServerUrl(const char* url);
+  void activateRecovery();
   void configure();
   void connectOrLoad();
   void loadList();
@@ -56,6 +60,8 @@ class FabricActivity final : public Activity, private UiAppHost {
   int pendingComponent = -1;
   bool pendingRetry = false;
   bool pendingConfig = false;
+  bool pendingDefault = false;
+  fabric::RecoveryMenu recovery;
   char errorBuffer[160]{};
   char displayScratch[256]{};
 };

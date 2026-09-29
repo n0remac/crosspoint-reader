@@ -30,6 +30,7 @@ void FabricActivity::onEnter() {
   app.on(fabric::UiRenderer::ACTION_COMPONENT, &FabricActivity::componentFn, this);
   app.on(ACTION_RETRY, &FabricActivity::retryFn, this);
   app.on(ACTION_CONFIG, &FabricActivity::configFn, this);
+  app.on(ACTION_DEFAULT, &FabricActivity::defaultFn, this);
   app.setScreen(&FabricActivity::screenFn, this);
   requestUpdate();
   if (!SETTINGS.fabricServerUrl[0])
@@ -52,11 +53,12 @@ void FabricActivity::onExit() {
 }
 
 void FabricActivity::configure() {
+  LOG_INF("FABRIC", "Opening server URL editor");
   auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_FABRIC_SERVER_URL),
                                                            SETTINGS.fabricServerUrl, 127, InputType::Url);
   if (!keyboard) {
     LOG_ERR("FABRIC", "OOM: URL keyboard");
-    showError(fabric::Error::Network);
+    showError(fabric::Error::OutOfMemory);
     return;
   }
   startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
@@ -65,24 +67,63 @@ void FabricActivity::configure() {
       return;
     }
     const auto& url = std::get<KeyboardResult>(result.data).text;
-    if (url.size() >= sizeof(SETTINGS.fabricServerUrl)) {
-      showError(fabric::Error::MalformedPage);
-      return;
-    }
-    const bool changed = strcmp(SETTINGS.fabricServerUrl, url.c_str()) != 0;
-    if (changed) strcpy(SETTINGS.fabricServerUrl, url.c_str());
-    if (changed || !urlSaved) {
-      urlSaved = SETTINGS.saveToFile();
-      if (!urlSaved) {
-        showError(fabric::Error::Persistence);
-        return;
-      }
-    }
-    connectOrLoad();
+    applyServerUrl(url.empty() ? FABRIC_DEFAULT_SERVER_URL : url.c_str());
   });
 }
 
+void FabricActivity::applyServerUrl(const char* url) {
+  client.resetDiagnostics();
+  if (!fabric::Client::isValidServerUrl(url)) {
+    showError(fabric::Error::InvalidServerUrl);
+    return;
+  }
+  closeRouting();
+  {
+    RenderLock lock;
+    if (strcmp(SETTINGS.fabricServerUrl, url) != 0) {
+      strcpy(SETTINGS.fabricServerUrl, url);
+      urlSaved = false;
+    }
+    nav.reset();
+    page.json.clear();
+    data.clear();
+    pages.clear();
+    listing = true;
+    hasPage = false;
+    scroll = maxScroll = 0;
+    actionCount = 0;
+    error = fabric::Error::None;
+  }
+  if (!urlSaved) {
+    urlSaved = SETTINGS.saveToFile();
+    if (!urlSaved) {
+      showError(fabric::Error::Persistence);
+      return;
+    }
+  }
+  LOG_INF("FABRIC", "Using server: %s", SETTINGS.fabricServerUrl);
+  connectOrLoad();
+}
+
+void FabricActivity::activateRecovery() {
+  LOG_INF("FABRIC", "Recovery action=%u", static_cast<unsigned>(recovery.selected()));
+  if (recovery.selected() == fabric::RecoveryAction::Configure)
+    configure();
+  else if (recovery.selected() == fabric::RecoveryAction::UseDefault)
+    applyServerUrl(FABRIC_DEFAULT_SERVER_URL);
+  else if (!urlSaved)
+    applyServerUrl(SETTINGS.fabricServerUrl);
+  else
+    connectOrLoad();
+}
+
 void FabricActivity::connectOrLoad() {
+  client.resetDiagnostics();
+  if (!fabric::Client::isValidServerUrl(SETTINGS.fabricServerUrl)) {
+    showError(fabric::Error::InvalidServerUrl);
+    return;
+  }
+  LOG_INF("FABRIC", "Connecting: server=%s WiFi=%d", SETTINGS.fabricServerUrl, WiFi.status());
   if (WiFi.status() == WL_CONNECTED) {
     if (listing)
       loadList();
@@ -93,22 +134,28 @@ void FabricActivity::connectOrLoad() {
   auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
   if (!wifi) {
     LOG_ERR("FABRIC", "OOM: WiFi selector");
-    showError(fabric::Error::Network);
+    showError(fabric::Error::OutOfMemory);
     return;
   }
   startActivityForResult(std::move(wifi), [this](const ActivityResult& result) {
     if (result.isCancelled || WiFi.status() != WL_CONNECTED)
       showError(fabric::Error::Network);
-    else if (listing)
-      loadList();
-    else
-      loadPage();
+    else {
+      LOG_INF("FABRIC", "WiFi connected: RSSI=%d", WiFi.RSSI());
+      if (listing)
+        loadList();
+      else
+        loadPage();
+    }
   });
 }
 
 void FabricActivity::showError(fabric::Error next) {
-  LOG_ERR("FABRIC", "Error %u on %s", static_cast<unsigned>(next), nav.current());
+  closeRouting();
   error = next;
+  recovery.reset(next == fabric::Error::InvalidServerUrl);
+  LOG_ERR("FABRIC", "%s (error=%u HTTP=%d page=%s WiFi=%d)", errorText(), static_cast<unsigned>(next),
+          client.httpStatus(), nav.current(), WiFi.status());
   requestUpdate();
 }
 
@@ -277,6 +324,12 @@ void FabricActivity::goBack() {
 }
 
 void FabricActivity::moveFocus(int delta) {
+  if (error != fabric::Error::None) {
+    recovery.move(delta, FABRIC_DEFAULT_SERVER_URL[0] != '\0');
+    LOG_DBG("FABRIC", "Recovery selection=%u", static_cast<unsigned>(recovery.selected()));
+    requestUpdate();
+    return;
+  }
   if (!actionCount) return;
   int index = static_cast<int>(nav.focus()) + delta;
   if (index < 0) index = actionCount - 1;
@@ -295,9 +348,15 @@ void FabricActivity::loop() {
     configure();
     return;
   }
+  if (pendingDefault) {
+    pendingDefault = false;
+    applyServerUrl(FABRIC_DEFAULT_SERVER_URL);
+    return;
+  }
   if (pendingRetry) {
     pendingRetry = false;
-    connectOrLoad();
+    recovery.reset(false);
+    activateRecovery();
     return;
   }
   if (pendingComponent >= 0) {
@@ -312,7 +371,7 @@ void FabricActivity::loop() {
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (error != fabric::Error::None)
-      connectOrLoad();
+      activateRecovery();
     else
       activate(nav.focus());
     return;
@@ -354,6 +413,10 @@ void FabricActivity::configFn(const fui::ActionEvent&, void* user) {
   static_cast<FabricActivity*>(user)->pendingConfig = true;
 }
 
+void FabricActivity::defaultFn(const fui::ActionEvent&, void* user) {
+  static_cast<FabricActivity*>(user)->pendingDefault = true;
+}
+
 const char* FabricActivity::errorText() const {
   switch (error) {
     case fabric::Error::Network:
@@ -389,15 +452,36 @@ void FabricActivity::drawScreen(UiScreen& screen) {
                                                 static_cast<int16_t>(metrics.buttonHintsHeight), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
   if (error != fabric::Error::None) {
-    auto area = screen.body();
+    using fui::LayoutAnchor;
+    if (FABRIC_DEFAULT_SERVER_URL[0])
+      screen.button(tr(STR_FABRIC_USE_DEFAULT), ACTION_DEFAULT, 0,
+                    recovery.selected() == fabric::RecoveryAction::UseDefault ? fui::StateSelected : fui::StateNormal,
+                    LayoutAnchor::Bottom);
+    screen.button(tr(STR_FABRIC_SERVER_URL), ACTION_CONFIG, 0,
+                  recovery.selected() == fabric::RecoveryAction::Configure ? fui::StateSelected : fui::StateNormal,
+                  LayoutAnchor::Bottom);
+    screen.button(tr(STR_RETRY), ACTION_RETRY, 0,
+                  recovery.selected() == fabric::RecoveryAction::Retry ? fui::StateSelected : fui::StateNormal,
+                  LayoutAnchor::Bottom);
     const char* message = errorText();
     if (error == fabric::Error::UnsupportedVersion) {
       snprintf(errorBuffer, sizeof(errorBuffer), tr(STR_FABRIC_VERSION_ERROR), page.json["fabric"] | "?");
       message = errorBuffer;
     }
-    screen.target().text(screen.takeTop(screen.theme().rowHeight * 2), message, screen.theme().bodyText);
-    screen.button(tr(STR_RETRY), ACTION_RETRY);
-    screen.button(tr(STR_FABRIC_SERVER_URL), ACTION_CONFIG);
+    auto detail = screen.theme().smallText;
+    detail.maxLines = 2;
+    const auto lineHeight = screen.target().lineHeight(detail.font);
+    screen.target().text(screen.takeTop(lineHeight * 2, screen.theme().spaceSm), message, detail);
+    if (client.httpStatus() > 0) {
+      snprintf(errorBuffer, sizeof(errorBuffer), tr(STR_FABRIC_HTTP_STATUS), client.httpStatus());
+      screen.target().text(screen.takeTop(lineHeight, screen.theme().spaceSm), errorBuffer, detail);
+    } else if (error == fabric::Error::Http || error == fabric::Error::Action) {
+      screen.target().text(screen.takeTop(lineHeight * 2, screen.theme().spaceSm), tr(STR_FABRIC_NO_RESPONSE), detail);
+    }
+    screen.target().text(screen.takeTop(lineHeight), tr(STR_FABRIC_SERVER_URL), detail);
+    detail.maxLines = 3;
+    screen.target().text(screen.body(), SETTINGS.fabricServerUrl[0] ? SETTINGS.fabricServerUrl : tr(STR_NO_SERVER_URL),
+                         detail);
     actionCount = 0;
     return;
   }

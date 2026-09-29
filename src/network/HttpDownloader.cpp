@@ -40,6 +40,7 @@ struct Sink {
   bool* cancelFlag = nullptr;
   size_t total = 0;
   size_t downloaded = 0;
+  int* httpStatus = nullptr;
 };
 
 bool isRedirect(int status) {
@@ -99,6 +100,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
         },
         [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
 
+    if (sink.httpStatus) *sink.httpStatus = status;
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
       LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
@@ -183,6 +185,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
   int64_t contentLength = esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
+  if (sink.httpStatus) *sink.httpStatus = status;
   for (int hop = 0; isRedirect(status) && hop < MAX_REDIRECTS; ++hop) {
     if (esp_http_client_set_redirection(client) != ESP_OK) break;
     esp_http_client_close(client);
@@ -194,6 +197,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     }
     contentLength = esp_http_client_fetch_headers(client);
     status = esp_http_client_get_status_code(client);
+    if (sink.httpStatus) *sink.httpStatus = status;
   }
 
   if (status != 200) {
@@ -282,20 +286,24 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, int* httpStatus) {
+  if (httpStatus) *httpStatus = 0;
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
   sink.write = onData;
+  sink.httpStatus = httpStatus;
   return runGetSecure(url, username, password, sink) == OK;
 }
 
 bool HttpDownloader::postJson(const std::string& url, const char* body, char* response, const size_t capacity,
-                              size_t& responseSize) {
+                              size_t& responseSize, int* httpStatus) {
   responseSize = 0;
+  if (httpStatus) *httpStatus = 0;
   WifiPowerSaveGuard psGuard;
 #if defined(FREEINK_NET_WOLFSSL)
   freeink::SecureHttpClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setInsecure();
   if (!http.begin(url)) return false;
   http.addHeader("Content-Type", "application/json");
   const int status = http.sendRequest("POST", reinterpret_cast<const uint8_t*>(body), strlen(body),
@@ -305,6 +313,7 @@ bool HttpDownloader::postJson(const std::string& url, const char* body, char* re
                                         responseSize += len;
                                         return true;
                                       });
+  if (httpStatus) *httpStatus = status;
   if (status != 200 || !http.responseComplete() || http.callbackAborted()) {
     LOG_ERR("HTTP", "Fabric POST failed: status=%d", status);
     responseSize = 0;
@@ -316,6 +325,7 @@ bool HttpDownloader::postJson(const std::string& url, const char* body, char* re
   config.buffer_size = HTTP_RX_BUF;
   config.buffer_size_tx = HTTP_TX_BUF;
   config.timeout_ms = HTTP_TIMEOUT_MS;
+  config.crt_bundle_attach = esp_crt_bundle_attach;
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) return false;
   esp_http_client_set_method(client, HTTP_METHOD_POST);
@@ -330,6 +340,7 @@ bool HttpDownloader::postJson(const std::string& url, const char* body, char* re
   }
   esp_http_client_fetch_headers(client);
   const int status = esp_http_client_get_status_code(client);
+  if (httpStatus) *httpStatus = status;
   auto chunk = makeUniqueNoThrow<char[]>(512);
   if (!chunk) {
     LOG_ERR("HTTP", "OOM: Fabric response buffer");

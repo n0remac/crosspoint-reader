@@ -182,7 +182,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
 
   const char* fabricUrl = doc["fabricServerUrl"] | "";
-  copyToField(fabricServerUrl, fabricUrl, sizeof(fabricServerUrl));
+  copyToField(fabricServerUrl, fabricUrl[0] ? fabricUrl : FABRIC_DEFAULT_SERVER_URL, sizeof(fabricServerUrl));
+  LOG_INF("CPS", "Fabric URL source: %s (%u bytes)", fabricUrl[0] ? "saved settings" : "compiled default",
+          static_cast<unsigned>(strlen(fabricServerUrl)));
 
   // Older files stored one combined touch mode under "touchReaderControls":
   // 0=off, 1=tap, 2=swipe, 3=inverted tap. Split it into the master toggle
