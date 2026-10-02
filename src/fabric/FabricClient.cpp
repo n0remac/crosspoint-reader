@@ -10,7 +10,7 @@
 #include <cstring>
 #include <string>
 
-#include "network/HttpDownloader.h"
+#include "FabricTransport.h"
 
 namespace fabric {
 namespace {
@@ -78,14 +78,15 @@ bool Client::ensureBuffer() {
 Error Client::get(const char* path, JsonDocument& out, size_t limit) {
   resetDiagnostics();
   if (!makeUrl(path, url, sizeof(url))) return Error::InvalidServerUrl;
+  if (token.empty()) return Error::Authentication;
   LOG_INF("FABRIC", "GET %s", url);
   logHeap("before GET");
   if (!ensureBuffer()) return Error::OutOfMemory;
   logHeap("with response buffer");
   size_t length = 0;
   bool overflow = false;
-  const bool fetched = HttpDownloader::fetchUrl(
-      url,
+  const bool fetched = Transport::get(
+      url, token,
       [this, &length, &overflow, limit](const uint8_t* bytes, size_t chunk) {
         if (chunk > limit - length) {
           overflow = true;
@@ -95,7 +96,7 @@ Error Client::get(const char* path, JsonDocument& out, size_t limit) {
         length += chunk;
         return true;
       },
-      "", "", &lastHttpStatus);
+      &lastHttpStatus);
   if (!fetched) {
     LOG_ERR("FABRIC", "GET failed: HTTP=%d bytes=%u overflow=%d WiFi=%d", lastHttpStatus, static_cast<unsigned>(length),
             overflow, WiFi.status());
@@ -142,15 +143,28 @@ Error Client::executeAction(const char* id, const char* componentId, JsonDocumen
   char path[112], body[100];
   snprintf(path, sizeof(path), "/api/pages/%s/actions", id);
   if (!makeUrl(path, url, sizeof(url))) return Error::InvalidServerUrl;
+  if (token.empty()) return Error::Authentication;
   snprintf(body, sizeof(body), "{\"component_id\":\"%s\"}", componentId);
   LOG_INF("FABRIC", "POST %s component=%s", url, componentId);
   logHeap("before POST");
   if (!ensureBuffer()) return Error::OutOfMemory;
   logHeap("with response buffer");
   size_t length = 0;
-  if (!HttpDownloader::postJson(url, body, responseBuffer.get(), MAX_DATA_BYTES, length, &lastHttpStatus)) {
+  bool overflow = false;
+  if (!Transport::post(
+          url, token, body,
+          [this, &length, &overflow](const uint8_t* bytes, size_t chunk) {
+            if (chunk > MAX_DATA_BYTES - length) {
+              overflow = true;
+              return false;
+            }
+            memcpy(responseBuffer.get() + length, bytes, chunk);
+            length += chunk;
+            return true;
+          },
+          &lastHttpStatus)) {
     LOG_ERR("FABRIC", "POST failed: HTTP=%d WiFi=%d", lastHttpStatus, WiFi.status());
-    return WiFi.status() == WL_CONNECTED ? Error::Action : Error::Network;
+    return overflow ? Error::TooLarge : WiFi.status() == WL_CONNECTED ? Error::Action : Error::Network;
   }
   LOG_INF("FABRIC", "POST complete: HTTP=%d bytes=%u", lastHttpStatus, static_cast<unsigned>(length));
   result.clear();

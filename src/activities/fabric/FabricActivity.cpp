@@ -18,11 +18,14 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fabric/FabricClient.h"
+#include "network/FabricFirmware.h"
 
 namespace fui = freeink::ui;
 
 FabricActivity::FabricActivity(GfxRenderer& renderer, MappedInputManager& input)
-    : Activity("Fabric", renderer, input), UiAppHost(renderer), client(SETTINGS.fabricServerUrl) {}
+    : Activity("Fabric", renderer, input),
+      UiAppHost(renderer),
+      client(SETTINGS.fabricServerUrl, fabric_firmware::readerToken()) {}
 
 void FabricActivity::onEnter() {
   Activity::onEnter();
@@ -441,6 +444,8 @@ const char* FabricActivity::errorText() const {
       return tr(STR_MEMORY_ERROR);
     case fabric::Error::Persistence:
       return tr(STR_FABRIC_SAVE_ERROR);
+    case fabric::Error::Authentication:
+      return tr(STR_FABRIC_AUTH_ERROR);
     default:
       return tr(STR_PAGE_LOAD_ERROR);
   }

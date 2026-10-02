@@ -20,7 +20,7 @@ enum class FetchResult { Ok, NotFound, Error };
 // applications read NVS and contain no credential.
 std::string readerToken();
 std::string installedBuildId();
-bool rememberInstalledBuildId(const std::string& id);
+bool rememberInstalledBuildId(const std::string& id, const uint8_t imageDigest[32]);
 
 // These requests use the firmware's compiled Fabric origin, never the editable
 // Fabric page URL, so a changed SD settings file cannot receive the token.

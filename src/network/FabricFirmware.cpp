@@ -6,8 +6,10 @@
 #include <Preferences.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
+#include <esp_ota_ops.h>
 
 #include <cstring>
+#include <string_view>
 
 #include "CrossPointSettings.h"
 #include "FirmwareBoardTag.h"
@@ -22,7 +24,7 @@ namespace {
 constexpr size_t MAX_METADATA = 2048;
 constexpr char API_PATH[] = "/api/firmware/v1/x3";
 
-bool lowercaseHex(const std::string& s, size_t expected) {
+bool lowercaseHex(std::string_view s, size_t expected) {
   if (s.size() != expected) return false;
   for (const char c : s) {
     if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
@@ -33,7 +35,9 @@ bool lowercaseHex(const std::string& s, size_t expected) {
 FetchResult get(const std::string& path, const std::string& token,
                 const std::function<bool(const uint8_t*, size_t)>& onData, size_t expectedSize = 0) {
   if (!configured() || token.empty() || path.rfind(API_PATH, 0) != 0) return FetchResult::Error;
-  const std::string url = std::string(FABRIC_DEFAULT_SERVER_URL) + path;
+  std::string url(FABRIC_DEFAULT_SERVER_URL);
+  while (!url.empty() && url.back() == '/') url.pop_back();
+  url += path;
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = 2048;
@@ -109,21 +113,35 @@ std::string installedBuildId() {
   Preferences preferences;
   if (!preferences.begin("fabric", true)) return {};
   const String value = preferences.getString("build", "");
+  uint8_t expected[32];
+  const bool hasDigest = preferences.getBytesLength("image") == sizeof(expected) &&
+                         preferences.getBytes("image", expected, sizeof(expected)) == sizeof(expected);
   preferences.end();
-  return std::string(value.c_str());
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  uint8_t actual[32];
+  return hasDigest && running && esp_partition_get_sha256(running, actual) == ESP_OK &&
+                 memcmp(expected, actual, sizeof(expected)) == 0 && lowercaseHex(value.c_str(), 32)
+             ? std::string(value.c_str())
+             : std::string();
 }
 
-bool rememberInstalledBuildId(const std::string& id) {
+bool rememberInstalledBuildId(const std::string& id, const uint8_t imageDigest[32]) {
   if (!lowercaseHex(id, 32)) return false;
   Preferences preferences;
   if (!preferences.begin("fabric", false)) return false;
-  const bool saved = preferences.putString("build", id.c_str()) == id.size();
+  preferences.remove("build");
+  const bool saved =
+      preferences.putBytes("image", imageDigest, 32) == 32 && preferences.putString("build", id.c_str()) == id.size();
   preferences.end();
   return saved;
 }
 
 bool configured() {
-  return FABRIC_DEFAULT_SERVER_URL[0] && std::string(FABRIC_DEFAULT_SERVER_URL).rfind("https://", 0) == 0;
+  std::string_view url(FABRIC_DEFAULT_SERVER_URL);
+  while (!url.empty() && url.back() == '/') url.remove_suffix(1);
+  return url.starts_with("https://") && url.size() > 8 && url.find_first_of("/?#@", 8) == std::string_view::npos &&
+         firmware_flash::runningPartitionChipId() == 5 && board_tag::boardNameLen() == 2 &&
+         memcmp(board_tag::boardName(), "x4", 2) == 0;
 }
 
 FetchResult latest(const std::string& token, Build& build) {

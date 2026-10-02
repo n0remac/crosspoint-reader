@@ -27,6 +27,7 @@ enum class Error : uint8_t {
   TooLarge,
   OutOfMemory,
   Persistence,
+  Authentication,
 };
 
 struct Page {

@@ -3,37 +3,34 @@
 #include <string>
 
 #include "fabric/FabricClient.h"
-#include "network/HttpDownloader.h"
+#include "fabric/FabricTransport.h"
 
 static std::string requested;
 static int responseStatus = 200;
 static const char* responseBody = "{}";
 static bool transportOk = true;
 
-bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string&, const std::string&,
-                              int* httpStatus) {
+bool fabric::Transport::get(const char* url, const std::string& token, const DataCallback& onData, int* httpStatus) {
+  assert(token == std::string(64, 'a'));
   requested = url;
   if (httpStatus) *httpStatus = responseStatus;
   return transportOk && onData(reinterpret_cast<const uint8_t*>(responseBody), strlen(responseBody));
 }
 
-bool HttpDownloader::postJson(const std::string& url, const char* body, char* response, size_t capacity,
-                              size_t& length, int* httpStatus) {
+bool fabric::Transport::post(const char* url, const std::string& token, const char* body, const DataCallback& onData,
+                             int* httpStatus) {
+  assert(token == std::string(64, 'a'));
   requested = url;
   assert(std::string(body) == "{\"component_id\":\"refresh\"}");
-  assert(capacity >= 2);
   if (httpStatus) *httpStatus = responseStatus;
-  length = strlen(responseBody);
-  assert(capacity >= length);
-  memcpy(response, responseBody, length);
-  return transportOk;
+  return transportOk && onData(reinterpret_cast<const uint8_t*>(responseBody), strlen(responseBody));
 }
 
 int main() {
   JsonDocument json;
   for (const char* base :
        {"http://example.test", "https://example.test", "https://example.test/", "https://example.test:443/base/"}) {
-    fabric::Client client(base);
+    fabric::Client client(base, std::string(64, 'a'));
     std::string prefix(base);
     if (prefix.back() == '/') prefix.pop_back();
     assert(client.listPages(json) == fabric::Error::None);
@@ -43,11 +40,12 @@ int main() {
     assert(client.executeAction("stocks", "refresh", json) == fabric::Error::None);
     assert(requested == prefix + "/api/pages/stocks/actions");
   }
-  for (const char* base : {static_cast<const char*>(nullptr), "", "http://", "https://", "ftp://example.test",
-                           "htttp://example.test", "https:///path", "https://:443", "https://example.test/a b",
-                           "https://example.test/\\path", "https://example.test/\npath", "https://user:pass@example.test",
-                           "http://example.test?x=1", "https://example.test#fragment"}) {
-    fabric::Client client(base);
+  for (const char* base :
+       {static_cast<const char*>(nullptr), "", "http://", "https://", "ftp://example.test", "htttp://example.test",
+        "https:///path", "https://:443", "https://example.test/a b", "https://example.test/\\path",
+        "https://example.test/\npath", "https://user:pass@example.test", "http://example.test?x=1",
+        "https://example.test#fragment"}) {
+    fabric::Client client(base, std::string(64, 'a'));
     requested.clear();
     assert(client.listPages(json) == fabric::Error::InvalidServerUrl);
     assert(client.executeAction("stocks", "refresh", json) == fabric::Error::InvalidServerUrl);
@@ -55,12 +53,12 @@ int main() {
     assert(client.httpStatus() == 0);
   }
   const std::string tooLong = "https://" + std::string(120, 'a');
-  fabric::Client rejected(tooLong.c_str());
+  fabric::Client rejected(tooLong.c_str(), std::string(64, 'a'));
   assert(rejected.listPages(json) == fabric::Error::InvalidServerUrl);
   const std::string maxLength = "https://" + std::string(119, 'a');
-  fabric::Client accepted(maxLength.c_str());
+  fabric::Client accepted(maxLength.c_str(), std::string(64, 'a'));
   assert(accepted.listPages(json) == fabric::Error::None);
-  fabric::Client client("https://example.test");
+  fabric::Client client("https://example.test", std::string(64, 'a'));
   transportOk = false;
   responseStatus = 404;
   assert(client.listPages(json) == fabric::Error::Http);

@@ -4,13 +4,15 @@
 
 #include <cstddef>
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "FabricPage.h"
 
 namespace fabric {
 class Client {
  public:
-  explicit Client(const char* baseUrl) : baseUrl(baseUrl) {}
+  explicit Client(const char* baseUrl, std::string token) : baseUrl(baseUrl), token(std::move(token)) {}
   static bool isValidServerUrl(const char* value);
   int httpStatus() const { return lastHttpStatus; }
   void resetDiagnostics() { lastHttpStatus = 0; }
@@ -21,6 +23,7 @@ class Client {
 
  private:
   const char* baseUrl;
+  std::string token;
   char url[224]{};
   int lastHttpStatus = 0;
   std::unique_ptr<char[]> responseBuffer;

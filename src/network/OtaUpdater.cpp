@@ -289,13 +289,19 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return INTERNAL_UPDATE_ERROR;
   }
 
+  uint8_t installedDigest[32];
+  if (fromFabric && esp_partition_get_sha256(updatePartition, installedDigest) != ESP_OK) {
+    LOG_ERR("OTA", "Could not verify installed Fabric image digest");
+    return INTERNAL_UPDATE_ERROR;
+  }
+
   esp_err = esp_ota_set_boot_partition(updatePartition);
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_ota_set_boot_partition failed: %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;
   }
 
-  if (fromFabric && !fabric_firmware::rememberInstalledBuildId(fabricBuildId)) {
+  if (fromFabric && !fabric_firmware::rememberInstalledBuildId(fabricBuildId, installedDigest)) {
     LOG_ERR("OTA", "Could not save installed Fabric build ID");
   }
 
