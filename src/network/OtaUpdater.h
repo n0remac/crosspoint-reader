@@ -9,6 +9,9 @@ class OtaUpdater {
   size_t otaSize = 0;
   size_t processedSize = 0;
   size_t totalSize = 0;
+  bool fromFabric = false;
+  std::string fabricBuildId;
+  std::string fabricSha256;
 
  public:
   using ProgressCallback = void (*)(void* ctx);

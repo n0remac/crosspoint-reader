@@ -9,12 +9,14 @@
 #include <ReleaseJsonParser.h>
 #include <esp_ota_ops.h>
 #include <esp_wifi.h>
+#include <mbedtls/sha256.h>
 // clang-format on
 
 #include <algorithm>
 #include <cstring>
 #include <string>
 
+#include "FabricFirmware.h"
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
 
@@ -24,6 +26,27 @@ constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-rea
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+  updateAvailable = false;
+  fromFabric = false;
+  if (fabric_firmware::configured()) {
+    const std::string token = fabric_firmware::readerToken();
+    if (token.empty()) {
+      LOG_ERR("OTA", "Fabric reader credential is missing");
+      return HTTP_ERROR;
+    }
+    fabric_firmware::Build build;
+    const auto result = fabric_firmware::latest(token, build);
+    if (result == fabric_firmware::FetchResult::NotFound) return NO_UPDATE;
+    if (result != fabric_firmware::FetchResult::Ok) return HTTP_ERROR;
+    latestVersion = build.version;
+    otaSize = build.size;
+    totalSize = build.size;
+    fabricBuildId = build.id;
+    fabricSha256 = build.sha256;
+    fromFabric = true;
+    updateAvailable = true;
+    return OK;
+  }
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
@@ -87,8 +110,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
 bool OtaUpdater::isUpdateNewer() const {
   if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSPOINT_VERSION) {
-    return false;
+    if (!fromFabric) return false;
   }
+  if (fromFabric) return updateAvailable && fabricBuildId != fabric_firmware::installedBuildId();
 
   int currentMajor, currentMinor, currentPatch;
   int latestMajor, latestMinor, latestPatch;
@@ -141,7 +165,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // wolfSSL when FREEINK_NET_WOLFSSL is set, reusing its redirect handling for the
   // GitHub -> CDN hop.
   const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
-  if (!updatePartition) {
+  if (!updatePartition || (fromFabric && otaSize > updatePartition->size)) {
     LOG_ERR("OTA", "No OTA partition available");
     return INTERNAL_UPDATE_ERROR;
   }
@@ -171,7 +195,16 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // the inactive OTA slot, but esp_ota_abort() below means it never becomes
   // the boot target.
   board_tag::Scanner tagScanner;
-  const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+  mbedtls_sha256_context shaContext;
+  if (fromFabric) {
+    mbedtls_sha256_init(&shaContext);
+    mbedtls_sha256_starts(&shaContext, 0);
+  }
+  const auto onChunk = [&](const uint8_t* data, size_t len) {
+    if (fromFabric && (len > otaSize - processedSize || mbedtls_sha256_update(&shaContext, data, len) != 0)) {
+      flashOk = false;
+      return false;
+    }
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);
       std::memcpy(hdr + hdrLen, data, take);
@@ -209,7 +242,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
       }
     }
     return true;
-  });
+  };
+  const bool fetchOk = fromFabric
+                           ? fabric_firmware::download(fabric_firmware::readerToken(),
+                                                       {fabricBuildId, latestVersion, fabricSha256, otaSize}, onChunk)
+                           : HttpDownloader::fetchUrl(otaUrl, onChunk);
 
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
@@ -217,13 +254,33 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   if (wrongChip || tagScanner.mismatch()) {
     LOG_ERR("OTA", "Firmware install aborted: wrong device");
     esp_ota_abort(otaHandle);
+    if (fromFabric) mbedtls_sha256_free(&shaContext);
     return WRONG_DEVICE_ERROR;
   }
 
   if (!fetchOk || !flashOk) {
     LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
     esp_ota_abort(otaHandle);
+    if (fromFabric) mbedtls_sha256_free(&shaContext);
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
+  }
+
+  if (fromFabric) {
+    uint8_t actual[32];
+    mbedtls_sha256_finish(&shaContext, actual);
+    mbedtls_sha256_free(&shaContext);
+    static constexpr char hex[] = "0123456789abcdef";
+    char digest[65];
+    for (size_t i = 0; i < sizeof(actual); ++i) {
+      digest[i * 2] = hex[actual[i] >> 4];
+      digest[i * 2 + 1] = hex[actual[i] & 15];
+    }
+    digest[64] = '\0';
+    if (processedSize != otaSize || fabricSha256 != digest) {
+      LOG_ERR("OTA", "Fabric firmware size or SHA256 mismatch");
+      esp_ota_abort(otaHandle);
+      return INTERNAL_UPDATE_ERROR;
+    }
   }
 
   esp_err = esp_ota_end(otaHandle);  // verifies the written image
@@ -236,6 +293,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_ota_set_boot_partition failed: %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;
+  }
+
+  if (fromFabric && !fabric_firmware::rememberInstalledBuildId(fabricBuildId)) {
+    LOG_ERR("OTA", "Could not save installed Fabric build ID");
   }
 
   LOG_INF("OTA", "Update completed");

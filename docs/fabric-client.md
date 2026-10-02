@@ -25,9 +25,46 @@ existing 128-byte settings field, so addresses must fit in 127 bytes plus the
 terminator. **Use default server** saves the compiled address and immediately
 reloads the page list, discarding navigation from the previous server. Alternatively,
 clear or remove the saved `fabricServerUrl` on SD and reboot. Flashing firmware does not erase settings on SD.
-The wolfSSL transport encrypts HTTPS requests but currently skips certificate
+The Fabric page transport encrypts HTTPS requests but currently skips certificate
 verification for both GET and POST because it has no CA bundle configured.
-Fabric authentication is not implemented.
+Page actions are not authenticated. Firmware OTA uses a separate, certificate-
+verified client and does not send its reader credential through this page transport.
+
+## Firmware registry OTA on the Pi
+
+The default X3/X4 build uses the compiled `fabric.default_server_url` for firmware
+requests. A saved page URL on SD cannot change the firmware origin. When this
+default is an HTTPS URL, **Settings → Update Firmware** checks Fabric's dev
+channel; otherwise it retains the existing GitHub release flow. The updater
+selects a configured Wi-Fi network, reads its reader credential from NVS,
+queries the latest compatible X3 build, and downloads it with the ESP-IDF CA
+bundle and hostname verification. It checks the image's size, chip and board
+tag, and SHA256 before selecting the inactive OTA partition for the next boot.
+The About screen shows the first 12 characters of the installed Fabric build ID
+after a successful update; a dash means no Fabric update has been installed.
+
+For the first USB bootstrap only, a private `src/FabricProvisioning.local.h` may
+define `FABRIC_BOOTSTRAP_READER_TOKEN` as a quoted string. The firmware copies
+it into NVS at startup if no reader credential exists there. Remove the header
+after USB flashing and before building any publishable image. Never commit it,
+and do not erase NVS when flashing subsequent builds. The Pi's publisher token
+must never be placed on the device.
+
+With Fabric running locally and the publisher token in
+`~/.config/fabric/publisher.token`, publish the token-free application with:
+
+```bash
+pio run -e default -t fabric-deploy
+```
+
+This target builds `firmware.bin`, rejects a present bootstrap header or an
+image containing this Pi's reader credential, and uploads the image to the
+immutable Fabric registry. It advances the dev channel only. The default
+publisher URL is `http://127.0.0.1:8080`; set `FABRIC_DEPLOY_SERVER` to an HTTPS
+origin when publishing from another machine. The target uses the source's Git
+branch and commit in the displayed version and records whether the checkout
+was dirty. Repeated deployments create distinct build IDs. See Fabric's
+`docs/firmware.md` for promotion and credential management.
 
 The firmware handles page components and sends only a component ID to the
 server's action endpoint. It does not interpret the action's `name`, `args`, or

@@ -35,6 +35,7 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/FabricFirmware.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
@@ -362,6 +363,11 @@ void setup() {
 #endif
 
   HalSystem::begin();
+  if (fabric_firmware::configured()) {
+    // The USB bootstrap image seeds NVS once. Later OTA images use the same
+    // per-device credential without carrying it in their own binaries.
+    fabric_firmware::readerToken();
+  }
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
   const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
