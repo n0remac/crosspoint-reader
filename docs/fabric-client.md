@@ -27,7 +27,9 @@ reloads the page list, discarding navigation from the previous server. Alternati
 clear or remove the saved `fabricServerUrl` on SD and reboot. Flashing firmware does not erase settings on SD.
 Page listing, page data, and actions use the same reader token stored in NVS for
 firmware OTA. HTTPS page and action requests use the ESP-IDF CA bundle and
-hostname verification. Redirects are rejected so the token cannot be forwarded
+hostname verification. At boot the hardware RTC seeds the system clock used for
+certificate dates; Wi-Fi retries NTP when that clock is invalid. Redirects are
+rejected so the token cannot be forwarded
 to a different origin. Plain HTTP local servers still work but carry the bearer
 token unencrypted; use HTTPS when the network is not trusted. The token is
 never included in a URL or Serial log.
@@ -80,13 +82,17 @@ the immediately previous page collapses that history entry. Home exits Fabric.
 The retained page and current data are separate ArduinoJson documents. Network
 bodies are capped at 24 KiB for pages and 32 KiB for data/action responses;
 validation limits pages to 96 components, depth 8, 24 action targets, and chart
-reads to 256 points. One checked 32 KiB response buffer is allocated on first
-use and reused for all transfers during the activity. ArduinoJson copies the
-strings it retains, so the response buffer can be reused. The URL buffer lives
-in the activity-owned client instead of on the task stack. Both buffers are
-released when the activity exits. A 512-byte read chunk is also checked and
-freed on each ESP-IDF GET or POST; keeping it off the task stack avoids exceeding the
-256-byte local-variable budget.
+reads to 256 points. The response buffer starts small and grows only as body
+bytes arrive, after TLS connects. It is released after parsing each response,
+which keeps it out of any later TLS handshake. The activity-owned client reuses
+its verified HTTPS connection between page, data, and action requests. A GET
+retries once with a fresh connection if TLS or an idle connection fails before
+any HTTP response. Actions are never retried automatically.
+ArduinoJson copies strings it retains. The URL buffer lives in the
+activity-owned client instead of on the task stack. A checked 512-byte read
+chunk is freed on each ESP-IDF GET or POST;
+keeping it off the task stack avoids exceeding the 256-byte local-variable
+budget.
 
 Chart rendering scans JSON twice to derive bounds and draw points without a
 second point array. Numeric and RFC3339 X fields are supported. Point order is

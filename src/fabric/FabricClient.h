@@ -3,11 +3,11 @@
 #include <ArduinoJson.h>
 
 #include <cstddef>
-#include <memory>
 #include <string>
 #include <utility>
 
 #include "FabricPage.h"
+#include "FabricTransport.h"
 
 namespace fabric {
 class Client {
@@ -24,10 +24,9 @@ class Client {
  private:
   const char* baseUrl;
   std::string token;
+  Transport transport;
   char url[224]{};
   int lastHttpStatus = 0;
-  std::unique_ptr<char[]> responseBuffer;
-  bool ensureBuffer();
   Error get(const char* path, JsonDocument& out, size_t limit);
   bool makeUrl(const char* path, char* out, size_t capacity) const;
 };

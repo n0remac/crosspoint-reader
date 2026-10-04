@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "FabricTransport.h"
@@ -30,6 +31,38 @@ bool validComponentId(const char* id) {
   }
   return true;
 }
+
+struct Response {
+  std::unique_ptr<char[]> buffer;
+  size_t length = 0;
+  size_t capacity = 0;
+  bool overflow = false;
+  bool outOfMemory = false;
+
+  bool append(const uint8_t* bytes, size_t chunk, size_t limit) {
+    if (chunk > limit - length) {
+      overflow = true;
+      return false;
+    }
+    const size_t required = length + chunk;
+    if (required > capacity) {
+      size_t next = capacity ? capacity : 1024;
+      while (next < required) next = next > limit / 2 ? limit : next * 2;
+      auto resized = makeUniqueNoThrow<char[]>(next);
+      if (!resized) {
+        outOfMemory = true;
+        LOG_ERR("FABRIC", "OOM: %u-byte response buffer", static_cast<unsigned>(next));
+        return false;
+      }
+      if (length) memcpy(resized.get(), buffer.get(), length);
+      buffer = std::move(resized);
+      capacity = next;
+    }
+    memcpy(buffer.get() + length, bytes, chunk);
+    length = required;
+    return true;
+  }
+};
 }  // namespace
 
 bool Client::isValidServerUrl(const char* value) {
@@ -67,46 +100,31 @@ bool Client::makeUrl(const char* path, char* out, size_t capacity) const {
   return count > 0 && static_cast<size_t>(count) < capacity;
 }
 
-bool Client::ensureBuffer() {
-  if (responseBuffer) return true;
-  responseBuffer = makeUniqueNoThrow<char[]>(MAX_DATA_BYTES);
-  if (responseBuffer) return true;
-  LOG_ERR("FABRIC", "OOM: %u-byte response buffer", static_cast<unsigned>(MAX_DATA_BYTES));
-  return false;
-}
-
 Error Client::get(const char* path, JsonDocument& out, size_t limit) {
   resetDiagnostics();
   if (!makeUrl(path, url, sizeof(url))) return Error::InvalidServerUrl;
   if (token.empty()) return Error::Authentication;
   LOG_INF("FABRIC", "GET %s", url);
   logHeap("before GET");
-  if (!ensureBuffer()) return Error::OutOfMemory;
-  logHeap("with response buffer");
-  size_t length = 0;
-  bool overflow = false;
-  const bool fetched = Transport::get(
+  Response response;
+  const bool fetched = transport.get(
       url, token,
-      [this, &length, &overflow, limit](const uint8_t* bytes, size_t chunk) {
-        if (chunk > limit - length) {
-          overflow = true;
-          return false;
-        }
-        memcpy(responseBuffer.get() + length, bytes, chunk);
-        length += chunk;
-        return true;
-      },
+      [&response, limit](const uint8_t* bytes, size_t chunk) { return response.append(bytes, chunk, limit); },
       &lastHttpStatus);
   if (!fetched) {
-    LOG_ERR("FABRIC", "GET failed: HTTP=%d bytes=%u overflow=%d WiFi=%d", lastHttpStatus, static_cast<unsigned>(length),
-            overflow, WiFi.status());
-    return overflow ? Error::TooLarge : WiFi.status() == WL_CONNECTED ? Error::Http : Error::Network;
+    LOG_ERR("FABRIC", "GET failed: HTTP=%d bytes=%u overflow=%d oom=%d WiFi=%d", lastHttpStatus,
+            static_cast<unsigned>(response.length), response.overflow, response.outOfMemory, WiFi.status());
+    return response.overflow               ? Error::TooLarge
+           : response.outOfMemory          ? Error::OutOfMemory
+           : WiFi.status() == WL_CONNECTED ? Error::Http
+                                           : Error::Network;
   }
-  LOG_INF("FABRIC", "GET complete: HTTP=%d bytes=%u", lastHttpStatus, static_cast<unsigned>(length));
+  LOG_INF("FABRIC", "GET complete: HTTP=%d bytes=%u", lastHttpStatus, static_cast<unsigned>(response.length));
   logHeap("after GET");
+  if (!response.length) return Error::InvalidJson;
   out.clear();
-  // const input forces ArduinoJson to own strings after this buffer is reused.
-  const auto parsed = deserializeJson(out, static_cast<const char*>(responseBuffer.get()), length);
+  // const input forces ArduinoJson to own strings after this buffer is released.
+  const auto parsed = deserializeJson(out, static_cast<const char*>(response.buffer.get()), response.length);
   if (parsed) {
     LOG_ERR("FABRIC", "GET JSON parse failed: %s", parsed.c_str());
     return Error::InvalidJson;
@@ -147,28 +165,21 @@ Error Client::executeAction(const char* id, const char* componentId, JsonDocumen
   snprintf(body, sizeof(body), "{\"component_id\":\"%s\"}", componentId);
   LOG_INF("FABRIC", "POST %s component=%s", url, componentId);
   logHeap("before POST");
-  if (!ensureBuffer()) return Error::OutOfMemory;
-  logHeap("with response buffer");
-  size_t length = 0;
-  bool overflow = false;
-  if (!Transport::post(
+  Response response;
+  if (!transport.post(
           url, token, body,
-          [this, &length, &overflow](const uint8_t* bytes, size_t chunk) {
-            if (chunk > MAX_DATA_BYTES - length) {
-              overflow = true;
-              return false;
-            }
-            memcpy(responseBuffer.get() + length, bytes, chunk);
-            length += chunk;
-            return true;
-          },
+          [&response](const uint8_t* bytes, size_t chunk) { return response.append(bytes, chunk, MAX_DATA_BYTES); },
           &lastHttpStatus)) {
     LOG_ERR("FABRIC", "POST failed: HTTP=%d WiFi=%d", lastHttpStatus, WiFi.status());
-    return overflow ? Error::TooLarge : WiFi.status() == WL_CONNECTED ? Error::Action : Error::Network;
+    return response.overflow               ? Error::TooLarge
+           : response.outOfMemory          ? Error::OutOfMemory
+           : WiFi.status() == WL_CONNECTED ? Error::Action
+                                           : Error::Network;
   }
-  LOG_INF("FABRIC", "POST complete: HTTP=%d bytes=%u", lastHttpStatus, static_cast<unsigned>(length));
+  LOG_INF("FABRIC", "POST complete: HTTP=%d bytes=%u", lastHttpStatus, static_cast<unsigned>(response.length));
+  if (!response.length) return Error::InvalidJson;
   result.clear();
-  const auto parsed = deserializeJson(result, static_cast<const char*>(responseBuffer.get()), length);
+  const auto parsed = deserializeJson(result, static_cast<const char*>(response.buffer.get()), response.length);
   if (parsed || !result.is<JsonObject>()) {
     LOG_ERR("FABRIC", "POST JSON invalid: %s object=%d", parsed.c_str(), result.is<JsonObject>());
     return Error::InvalidJson;

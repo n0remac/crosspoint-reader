@@ -8,6 +8,7 @@
 #include <esp_mac.h>
 
 #include <algorithm>
+#include <ctime>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -520,7 +521,9 @@ void WifiSelectionActivity::checkConnectionStatus() {
     // Sync RTC from NTP on the first successful WiFi connection only. The DS3231
     // drifts ~2 ppm so one sync is enough; users can force a re-sync from
     // Settings > System > Clock > Sync clock now.
-    if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
+    // A previously synced RTC can lose power. Verified HTTPS needs a valid
+    // system date even when the saved setting says it was synced once.
+    if (halClock.isAvailable() && (!SETTINGS.clockHasBeenSynced || time(nullptr) < 1704067200)) {
       if (halClock.syncFromNTP()) {
         SETTINGS.clockHasBeenSynced = 1;
         SETTINGS.saveToFile();

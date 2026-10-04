@@ -11,8 +11,16 @@ namespace fabric {
 class Transport {
  public:
   using DataCallback = std::function<bool(const uint8_t*, size_t)>;
-  static bool get(const char* url, const std::string& token, const DataCallback& onData, int* status);
-  static bool post(const char* url, const std::string& token, const char* body, const DataCallback& onData,
-                   int* status);
+  ~Transport();
+  Transport() = default;
+  Transport(const Transport&) = delete;
+  Transport& operator=(const Transport&) = delete;
+  bool get(const char* url, const std::string& token, const DataCallback& onData, int* status);
+  bool post(const char* url, const std::string& token, const char* body, const DataCallback& onData, int* status);
+
+ private:
+  void* handle = nullptr;
+  void close();
+  bool request(const char* url, const std::string& token, const char* body, const DataCallback& onData, int* status);
 };
 }  // namespace fabric

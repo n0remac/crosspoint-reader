@@ -3,14 +3,10 @@
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
+#include <sys/time.h>
 #include <time.h>
 
 HalClock halClock;  // Singleton instance
-
-void HalClock::begin() {
-  _available = _sdkRtc.begin();
-  LOG_INF("CLK", _available ? "SDK RTC found" : "RTC not found");
-}
 
 namespace {
 // UTC calendar date -> Unix epoch, no timezone involvement (newlib has no
@@ -27,6 +23,23 @@ time_t epochFromUtc(const Rtc::DateTime& dt) {
   return static_cast<time_t>(days) * 86400 + dt.hour * 3600L + dt.minute * 60L + dt.second;
 }
 }  // namespace
+
+void HalClock::begin() {
+  _available = _sdkRtc.begin();
+  LOG_INF("CLK", _available ? "SDK RTC found" : "RTC not found");
+  if (!_available) return;
+
+  Rtc::DateTime dt;
+  if (!_sdkRtc.now(dt) || dt.year < 2020 || dt.year > 2099 || dt.month < 1 || dt.month > 12 || dt.day < 1 ||
+      dt.day > 31 || dt.hour > 23 || dt.minute > 59 || dt.second > 59)
+    return;
+
+  const timeval wallClock{epochFromUtc(dt), 0};
+  if (settimeofday(&wallClock, nullptr) != 0)
+    LOG_ERR("CLK", "Could not restore system time from RTC");
+  else
+    LOG_INF("CLK", "System time restored from RTC");
+}
 
 void HalClock::setTimezone(const char* posixTz) {
   setenv("TZ", posixTz && posixTz[0] != '\0' ? posixTz : "UTC0", 1);

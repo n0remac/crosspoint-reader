@@ -10,11 +10,23 @@ static int responseStatus = 200;
 static const char* responseBody = "{}";
 static bool transportOk = true;
 
+static bool deliver(const fabric::Transport::DataCallback& onData) {
+  if (!transportOk) return false;
+  const size_t length = strlen(responseBody);
+  for (size_t offset = 0; offset < length; offset += 512) {
+    const size_t chunk = length - offset < 512 ? length - offset : 512;
+    if (!onData(reinterpret_cast<const uint8_t*>(responseBody + offset), chunk)) return false;
+  }
+  return true;
+}
+
+fabric::Transport::~Transport() = default;
+
 bool fabric::Transport::get(const char* url, const std::string& token, const DataCallback& onData, int* httpStatus) {
   assert(token == std::string(64, 'a'));
   requested = url;
   if (httpStatus) *httpStatus = responseStatus;
-  return transportOk && onData(reinterpret_cast<const uint8_t*>(responseBody), strlen(responseBody));
+  return deliver(onData);
 }
 
 bool fabric::Transport::post(const char* url, const std::string& token, const char* body, const DataCallback& onData,
@@ -23,7 +35,7 @@ bool fabric::Transport::post(const char* url, const std::string& token, const ch
   requested = url;
   assert(std::string(body) == "{\"component_id\":\"refresh\"}");
   if (httpStatus) *httpStatus = responseStatus;
-  return transportOk && onData(reinterpret_cast<const uint8_t*>(responseBody), strlen(responseBody));
+  return deliver(onData);
 }
 
 int main() {
@@ -71,6 +83,13 @@ int main() {
   assert(client.httpStatus() == -1);
   transportOk = true;
   responseStatus = 200;
+  const std::string large = "{\"stocks\":{\"blob\":\"" + std::string(8192, 'x') + "\"}}";
+  responseBody = large.c_str();
+  assert(client.getPageData("stocks", json) == fabric::Error::None);
+  assert(json["stocks"]["blob"].as<std::string>().size() == 8192);
+  const std::string oversized = "{\"stocks\":{\"blob\":\"" + std::string(fabric::MAX_DATA_BYTES, 'x') + "\"}}";
+  responseBody = oversized.c_str();
+  assert(client.getPageData("stocks", json) == fabric::Error::TooLarge);
   responseBody = "<html>not JSON</html>";
   assert(client.listPages(json) == fabric::Error::InvalidJson);
   assert(client.httpStatus() == 200);
